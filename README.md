@@ -10,7 +10,7 @@ Run in a kaggle notebook. Or locally
 
 ### Local install
 
-1. Get [mambaforge]([url](https://github.com/conda-forge/miniforge)https://github.com/conda-forge/miniforge)
+1. Get [mambaforge](https://github.com/conda-forge/miniforge)
 
 2. Create new env
    `conda create --name ml-project -f ./ml.yml`
