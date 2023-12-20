@@ -3,7 +3,7 @@ import sys
 
 import pandas as pd
 
-os.chdir("project/ml2023-project")
+# os.chdir("project/ml2023-project")
 os.getcwd()
 sys.path.append(os.getcwd())
 
@@ -19,16 +19,15 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error
 from sklearn.impute import SimpleImputer
 
 # %%
-train_df = pd.read_csv('train.csv')[100000:]
+train_df = pd.read_csv('train.csv')[70000:]
 # Drip high null columsn
 high_null_cols = train_df.isna().sum().sort_values(ascending=False)[:2].index
 
 print(f"high null values: {high_null_cols}")
 
 def drop_cols(df, cols):
-    df = df.drop(cols, axis=1)
+    df.drop(cols, axis=1, inplace=True)
     return df
-
 df = drop_cols(train_df, high_null_cols)
 df = drop_cols(df, ['row_id'])
 
@@ -39,7 +38,7 @@ def imputer(df_processed):
     stock_list = list(df_processed['stock_id'].unique())
 
     imputer_columns = ['imbalance_size', 'reference_price', 'matched_size', 'bid_price', 'ask_price',
-                       'wap', 'target', 'seconds_in_bucket', 'bid_size', 'ask_size']
+                       'wap', 'target', 'bid_size', 'ask_size']
 
     # Create a single SimpleImputer instance for each column
     imputers = {col: SimpleImputer(missing_values=np.nan, strategy='median') for col in imputer_columns}
@@ -59,33 +58,71 @@ def imputer(df_processed):
 df_processed, imputers = imputer(df)
 
 
-
-
 # %%
 
-mask = df_processed['date_id'] < 384
+# engineer time delay features using previous day data
+# the features are: wap, bid_price, ask_price, bid_size, ask_size
+# features should be copies of the previous day's data and weigheted average of the previous 5 days
 
-y = df_processed['target']
-X = df_processed.drop(['target'], axis = 1)
-X = X.drop(['time_id'], axis = 1)
-X_cols = X.columns
+# List of features to engineer
+features = ['imbalance_size', 'reference_price', 'matched_size', 'bid_price', 'ask_price',
+            'wap', 'target', 'bid_size', 'ask_size']
 
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size = 0.2, shuffle = False)
+df_shifted = df_processed.copy()
+df_shifted['date_id'] = df_shifted['date_id'].astype(np.int64) + 1
 
+# Merge the original and shifted DataFrames on date_id, stock_id, and seconds_in_bucket
+df_processed = pd.merge(df_processed, df_shifted, how='inner', on=['date_id', 'stock_id', 'seconds_in_bucket'], suffixes=('', '_prev_day'))
 
-# # normalize mean and std by stock_id
-means = X_test.groupby('stock_id').mean().target
-stds = X_test.groupby('stock_id').std().target
+# # Create new columns for previous day's data
+for feature in features:
+        df_processed[feature + '_5_day_weighted_avg'] = (
+        df_processed.groupby(['stock_id', "date_id"])[feature + '_prev_day'].rolling(window=5).mean().reset_index(level=['stock_id', 'date_id'], drop=True)
+    )
 
-X_train['target'] = X_train.apply(lambda row: (row['target'] - means[row['stock_id']]) / stds[row['stock_id']], axis=1)
-X_test['target'] = X_test.apply(lambda row: (row['target'] - means[row['stock_id']]) / stds[row['stock_id']], axis=1)
+# %%
+feature = "imbalance_size"
+df_processed[feature + '_5_day_weighted_avg'] = df_processed.groupby(['stock_id', "date_id"])[feature + '_prev_day'].rolling(window=5).mean().reset_index(level=['stock_id', 'date_id'], drop=True)
+        
+# %%
+del df_shifted
+# %%
+
+a = df_processed[(df_processed.date_id<385)]
+y_train = a['target']
+X_train = a.drop(['target'], axis = 1)
+
+a = df_processed[(df_processed.date_id>=385)]
+y_test = a['target']
+X_test = a.drop(['target'], axis = 1)
+
+del a
+del df_processed
 
 # %%
 # Train the model
-clf_fst = xgb.XGBRegressor(n_estimators = 50, eval_metric = 'mae')
+clf_fst = xgb.XGBRegressor(
+    n_estimators=1000, 
+    learning_rate=0.01, 
+    max_depth=8, 
+    min_child_weight=1, 
+    gamma=0.1, 
+    colsample_bytree=0.8, 
+    reg_alpha=0.005, 
+    reg_lambda=1, 
+    scale_pos_weight=1,
+    eval_metric='mae',
+    random_state=42, 
+    verbose=1,
+)
 clf_fst.fit(X_train, y_train)
 
 # %%
+
+# 6.320171280746256
+# 5.972010612487793
+# 5.938581373153809
+
 # Predict on training and test sets, and compute MAE
 preds_test = clf_fst.predict(X_test)
 mean_absolute_error(y_test, preds_test)
